@@ -1,0 +1,138 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Auto-upgrade Amazon Quick Reader to Reader Pro on CreateUser
+
+Resources:
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: AmazonQuick-UpgradeReaderProRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: QuickUpdateUser
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - quicksight:UpdateUser
+                  - quicksight:DescribeUser
+                Resource: '*'
+
+  UpgradeReaderFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: AmazonQuick-UpgradeToReaderPro
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Timeout: 30
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          AWS_ACCOUNT_ID: !Ref AWS::AccountId
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import boto3
+          import logging
+
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          qs = boto3.client('quicksight')
+
+          AWS_ACCOUNT_ID = os.environ['AWS_ACCOUNT_ID']
+          NAMESPACE = 'default'
+
+
+          def lambda_handler(event, context):
+              logger.info(f"Received event: {json.dumps(event)}")
+
+              detail = event.get('detail', {})
+              service_details = detail.get('serviceEventDetails', {})
+              request_details = service_details.get('eventRequestDetails', {})
+
+              user_name = request_details.get('userName')
+              user_role = request_details.get('role')
+
+              if not user_name:
+                  logger.error("No userName found in event")
+                  return {'statusCode': 400, 'body': 'Missing userName'}
+
+              # Convert ':' to '/' for federated user API calls
+              api_user_name = user_name.replace(':', '/')
+
+              if user_role != 'READER':
+                  logger.info(f"User {user_name} role is {user_role}, not READER. Skipping.")
+                  return {'statusCode': 200, 'body': 'Skipped - not a READER'}
+
+              try:
+                  user_info = qs.describe_user(
+                      UserName=api_user_name,
+                      AwsAccountId=AWS_ACCOUNT_ID,
+                      Namespace=NAMESPACE,
+                  )['User']
+
+                  response = qs.update_user(
+                      UserName=api_user_name,
+                      AwsAccountId=AWS_ACCOUNT_ID,
+                      Namespace=NAMESPACE,
+                      Role='READER_PRO',
+                      Email=user_info['Email'],
+                  )
+                  logger.info(f"Successfully upgraded {api_user_name} to READER_PRO: {response}")
+                  return {'statusCode': 200, 'body': f'Upgraded {api_user_name} to READER_PRO'}
+
+              except qs.exceptions.ResourceNotFoundException:
+                  logger.error(f"User {api_user_name} not found in QuickSight")
+                  return {'statusCode': 404, 'body': f'User {api_user_name} not found'}
+
+              except Exception as e:
+                  logger.error(f"Failed to upgrade user {api_user_name}: {str(e)}")
+                  raise
+
+  EventBridgeRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: AmazonQuick-ReaderRegistered
+      Description: Capture QuickSight CreateUser service events for READER role
+      State: ENABLED
+      EventPattern:
+        source:
+          - aws.quicksight
+        detail-type:
+          - AWS Service Event via CloudTrail
+        detail:
+          eventSource:
+            - quicksight.amazonaws.com
+          eventName:
+            - CreateUser
+          serviceEventDetails:
+            eventRequestDetails:
+              role:
+                - READER
+      Targets:
+        - Id: UpgradeReaderLambda
+          Arn: !GetAtt UpgradeReaderFunction.Arn
+
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref UpgradeReaderFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt EventBridgeRule.Arn
+
+Outputs:
+  LambdaFunctionArn:
+    Value: !GetAtt UpgradeReaderFunction.Arn
+  EventBridgeRuleArn:
+    Value: !GetAtt EventBridgeRule.Arn
