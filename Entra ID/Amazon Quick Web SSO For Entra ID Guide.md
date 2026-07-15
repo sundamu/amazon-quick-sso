@@ -132,7 +132,7 @@ Claim 3：SessionDuration
                 "quicksight:CreateReader"
             ],
             "Effect": "Allow",
-            "Resource": "*"
+            "Resource": "arn:aws:quicksight::<ACCOUNT_ID>:user/${aws:userid}"
         }
     ]
 }
