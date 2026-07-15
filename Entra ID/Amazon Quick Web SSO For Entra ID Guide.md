@@ -272,12 +272,7 @@ https://launcher.myapps.microsoft.com/api/signin/1cc7efd0-8ad8-4250-b42a-50263b2
             "Principal": {
                 "Federated": "arn:aws:iam::<ACCOUNT_ID>:saml-provider/QuickEntraID"
             },
-            "Action": "sts:TagSession",
-            "Condition": {
-                "StringLike": {
-                    "aws:RequestTag/Email": "*"
-                }
-            }
+            "Action": "sts:TagSession"
         }
     ]
 }
